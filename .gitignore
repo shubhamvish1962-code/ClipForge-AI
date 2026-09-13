@@ -1,0 +1,47 @@
+# Secrets — never commit. .env holds live API keys.
+.env
+.env.local
+*.key
+
+# Local database
+*.db
+*.db-shm
+*.db-wal
+
+# Media and generated output (hundreds of MB)
+storage/uploads/
+storage/processed/
+storage/temp/
+storage/transcripts/
+storage/models/
+*.mp4
+*.m4a
+*.wav
+*.part
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+
+# Build and cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.next/
+*.tsbuildinfo
+
+# Logs
+*.log
+backend.err
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Nested repo - has its own git history
+apps/web/
+
+# Unrelated projects
+aternos-keepalive/
+*.vsix
