@@ -354,6 +354,17 @@ async def download_clip_file(
     end_time = candidate.end_time or (start_time + clip_duration)
 
     if not clip_file.exists() or clip_file.stat().st_size < 10000:
+        # A clip the pipeline never approved was never rendered either. The
+        # re-render path below can take minutes (re-downloading the source),
+        # and the client just spins with no indication anything is wrong — so
+        # say so immediately rather than starting work that should not happen.
+        if getattr(candidate, "status", "") == "needs_review":
+            raise HTTPException(
+                409,
+                "This clip did not pass quality checks, so no video was produced. "
+                "Re-run processing for this project to try again.",
+            )
+
         # Locate complete merged source video
         source_file = None
         video = None
