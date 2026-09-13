@@ -37,6 +37,11 @@ from apps.api.agents.quality_control_agent import QualityControlAgent
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+#: Floor on usable speech. Below this the transcript describes a video with
+#: no real dialogue, and any clips built from it would be guesswork.
+MIN_SEGMENTS_FOR_CLIPS = 4
+MIN_WORDS_FOR_CLIPS = 40
+
 # In-memory event buffer for SSE
 _job_events: dict[str, list[dict]] = defaultdict(list)
 
@@ -191,10 +196,18 @@ async def _run_pipeline(job_id: str, project_id: str, params: dict):
             # producing clips that have nothing to do with the actual video.
             if tr_result.status == "failed":
                 raise RuntimeError(f"Transcription failed: {tr_result.error or 'unknown error'}")
-            if not tr_result.output.get("segments"):
+            # Clip selection needs actual spoken content to reason about. A
+            # music video or ambient footage transcribes to a word or two,
+            # which is not "no transcript" but is far too little to pick
+            # moments from — and a bare emptiness check lets it through.
+            tr_segments = tr_result.output.get("segments") or []
+            tr_words = tr_result.output.get("word_count") or 0
+            if len(tr_segments) < MIN_SEGMENTS_FOR_CLIPS or tr_words < MIN_WORDS_FOR_CLIPS:
                 raise RuntimeError(
-                    "Transcription produced no segments — the source may have no "
-                    "speech, or the audio could not be read."
+                    f"Not enough speech to build clips — found {tr_words} word(s) in "
+                    f"{len(tr_segments)} segment(s). This tool needs a video where "
+                    "someone is talking (podcast, interview, commentary). Music "
+                    "videos and footage without dialogue cannot be clipped."
                 )
 
             transcript = Transcript(

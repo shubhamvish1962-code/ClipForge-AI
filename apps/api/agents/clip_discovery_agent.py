@@ -139,34 +139,53 @@ async def _discover_from_transcript(segments: list[dict], topics: dict) -> dict 
     """
     Real discovery: cheap prefilter over the transcript, then one LLM call.
 
-    Returns None (rather than raising) whenever the real path is unavailable, so
-    the agent can fall back to demo windows and the pipeline keeps running.
-    """
-    if not segments or len(segments) < 2:
-        return None
+    Returns None only when no real LLM is configured, so demo mode still works.
 
+    When a real provider *is* configured, every failure raises instead. Falling
+    back to the canned demo windows in that case produced the worst possible
+    outcome: a music video came back with clips about investor rejections and
+    transformer models, captioned from a transcript that was never its own —
+    output that looks finished and is entirely fabricated.
+    """
     from apps.api.providers.llm.base import get_llm_provider, MockLLMProvider
     from apps.api.agents.clip_selection import (
+        MAX_CLIP_SECONDS,
+        MIN_CLIP_SECONDS,
         build_candidate_windows,
         prefilter,
         select_with_llm,
     )
 
     provider = get_llm_provider()
+    real_llm = not isinstance(provider, MockLLMProvider)
+
+    if not segments or len(segments) < 2:
+        if real_llm:
+            raise RuntimeError(
+                f"Transcript has only {len(segments or [])} segment(s) — not enough "
+                "spoken content to choose clips from."
+            )
+        return None
     if isinstance(provider, MockLLMProvider):
         return None  # demo mode — use the canned windows
 
     windows = build_candidate_windows(segments)
     if not windows:
-        logger.info("No candidate windows met the duration bounds")
-        return None
+        raise RuntimeError(
+            "No stretch of speech fits the clip length bounds "
+            f"({int(MIN_CLIP_SECONDS)}-{int(MAX_CLIP_SECONDS)}s) — the source may be "
+            "too short or too sparsely spoken."
+        )
 
     candidates = prefilter(windows)
     topic = str(topics.get("main_topic", "")) if isinstance(topics, dict) else ""
 
     clips = await select_with_llm(candidates, provider, topic=topic)
     if not clips:
-        return None
+        raise RuntimeError(
+            "Clip selection did not return usable results from the language model. "
+            "Check the log for the underlying error and try again."
+        )
 
     logger.info(
         f"LLM selection: {len(windows)} windows -> {len(candidates)} candidates -> {len(clips)} clips"
