@@ -24,6 +24,57 @@ logging.basicConfig(
 logger = logging.getLogger("clipforge")
 
 
+async def _fail_orphaned_jobs() -> None:
+    """
+    Mark jobs left mid-flight by a previous process as failed.
+
+    The pipeline runs as an in-process asyncio task, so a restart kills any
+    running job without anything updating its row. It then sits at
+    "processing" forever — a progress bar that never moves and never errors.
+
+    Nothing can legitimately be running at startup, since no task has been
+    scheduled yet, so anything still marked queued/processing is stale by
+    definition and safe to fail here.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from apps.api.core.database import async_session_factory
+    from apps.api.models.job import ProcessingJob
+    from apps.api.models.project import Project
+
+    try:
+        async with async_session_factory() as db:
+            stale = (await db.execute(
+                select(ProcessingJob).where(ProcessingJob.status.in_(["queued", "processing"]))
+            )).scalars().all()
+
+            if not stale:
+                return
+
+            for job in stale:
+                job.status = "failed"
+                job.error = (
+                    f"Interrupted at '{job.current_stage or 'unknown'}' "
+                    f"({job.progress or 0:.0f}%) — the server restarted while this "
+                    "job was running. Start it again."
+                )
+                job.completed_at = datetime.now(timezone.utc)
+
+                project = (await db.execute(
+                    select(Project).where(Project.id == job.project_id)
+                )).scalar_one_or_none()
+                if project and project.status == "processing":
+                    project.status = "failed"
+
+            await db.commit()
+            logger.warning(f"   Failed {len(stale)} job(s) orphaned by a previous restart")
+    except Exception as e:
+        # Never block startup over cleanup.
+        logger.warning(f"   Could not clean up orphaned jobs: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
@@ -35,6 +86,8 @@ async def lifespan(app: FastAPI):
 
     await init_db()
     logger.info("   Database initialized")
+
+    await _fail_orphaned_jobs()
 
     yield
 
