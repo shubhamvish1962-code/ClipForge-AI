@@ -31,6 +31,10 @@ def get_ffmpeg_binary() -> str:
     return "ffmpeg"
 
 
+class SourceUnreachableError(RuntimeError):
+    """The source could not be contacted, as opposed to being invalid."""
+
+
 _FFMPEG_PATH_PATCHED = False
 
 
@@ -119,7 +123,17 @@ def get_video_info(url: str) -> Optional[dict]:
         }
     except Exception as e:
         logger.warning(f"Could not read video info for {url}: {e}")
+        # Surface the distinction the caller cannot make from a bare None:
+        # a network outage is not the same as a bad or unavailable video, and
+        # telling the user "no usable info" when their wifi dropped sends them
+        # looking for problems in the wrong place.
+        text = str(e).lower()
+        if any(s in text for s in ("getaddrinfo", "failed to resolve", "temporary failure in name resolution")):
+            raise SourceUnreachableError(
+                "Could not reach YouTube — check your internet connection, then try again."
+            ) from None
         return None
+
 
 
 @dataclass
