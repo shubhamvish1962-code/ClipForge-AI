@@ -452,9 +452,15 @@ async def _run_pipeline(job_id: str, project_id: str, params: dict):
                 )
 
                 # Persist all 5 variants
+                # Variant A is the one the critic judges and the renderer
+                # produces, so its id is needed to attach QA results below.
+                primary_variant_id = None
                 for p in variant_plans:
+                    variant_id = shortuuid.uuid()
+                    if p.variant_label == "A":
+                        primary_variant_id = variant_id
                     db.add(ClipVariant(
-                        id=shortuuid.uuid(),
+                        id=variant_id,
                         candidate_clip_id=clip.id,
                         variant_label=p.variant_label,
                         variant_type=p.variant_name,
@@ -479,6 +485,22 @@ async def _run_pipeline(job_id: str, project_id: str, params: dict):
                         "variant": "A",
                     })
                     await _log_agent_run(db, project_id, job_id, qa_result)
+
+                    # Persist each critic's verdict. Without this the qa_results
+                    # table stays empty and the UI's QA panel has nothing to
+                    # show, even though the checks did run.
+                    if primary_variant_id:
+                        for agent_name, outcome in (qa_result.output.get("qa_results") or {}).items():
+                            db.add(QAResult(
+                                id=shortuuid.uuid(),
+                                variant_id=primary_variant_id,
+                                qa_agent=agent_name,
+                                passed=bool(outcome.get("passed", False)),
+                                score=float(outcome.get("score", 0.0) or 0.0),
+                                issues=outcome.get("issues") or None,
+                                recommendations=outcome.get("recommendations") or None,
+                                attempt=attempt + 1,
+                            ))
 
                     overall_passed = qa_result.output.get("overall_passed", True)
 

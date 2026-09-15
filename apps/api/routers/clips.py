@@ -14,8 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from apps.api.core.config import get_settings
 from apps.api.core.database import get_db
 from apps.api.core.security import get_current_user, security_scheme, HTTPAuthorizationCredentials
+
+settings = get_settings()
 from apps.api.models.user import User
 from apps.api.models.project import Project, Source
 from apps.api.models.video import Video
