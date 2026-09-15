@@ -35,6 +35,14 @@ class SourceUnreachableError(RuntimeError):
     """The source could not be contacted, as opposed to being invalid."""
 
 
+#: Tries per range before giving up on it.
+SECTION_DOWNLOAD_ATTEMPTS = 3
+#: Base wait before a retry; multiplied by the attempt number.
+SECTION_RETRY_BACKOFF_SECONDS = 8
+#: Pause between consecutive range downloads, to stay under rate limits.
+SECTION_REQUEST_GAP_SECONDS = 3
+
+
 _FFMPEG_PATH_PATCHED = False
 
 
@@ -243,13 +251,50 @@ def download_video_sections(
     if not ranges:
         return []
 
+    import time
+
     merged = _merge_ranges([(max(0.0, s - padding), e + padding) for s, e in ranges])
     out: list[DownloadedSection] = []
 
-    for start, end in merged:
-        path = download_video_section(url, start, end, output_dir, filename_prefix)
+    for index, (start, end) in enumerate(merged):
+        # Space the requests out. Firing several range downloads back to back
+        # at the same video is what trips YouTube's "confirm you're not a bot"
+        # check partway through a run, which used to cost every remaining clip.
+        if index:
+            time.sleep(SECTION_REQUEST_GAP_SECONDS)
+
+        path = None
+        for attempt in range(SECTION_DOWNLOAD_ATTEMPTS):
+            path = download_video_section(url, start, end, output_dir, filename_prefix)
+            if path:
+                break
+            if attempt < SECTION_DOWNLOAD_ATTEMPTS - 1:
+                backoff = SECTION_RETRY_BACKOFF_SECONDS * (attempt + 1)
+                logger.warning(
+                    f"Section [{start:.1f}-{end:.1f}] failed, retrying in {backoff}s "
+                    f"(attempt {attempt + 2}/{SECTION_DOWNLOAD_ATTEMPTS})"
+                )
+                time.sleep(backoff)
+
         if path:
             out.append(DownloadedSection(range_start=start, range_end=end, path=path))
+        else:
+            logger.warning(f"Gave up on section [{start:.1f}-{end:.1f}] after retries")
+
+    # If ranges were wanted but none arrived, the per-range approach is being
+    # blocked outright. One full download is slower but salvages the run
+    # instead of losing every clip.
+    if merged and not out:
+        logger.warning("All section downloads failed; falling back to a full download")
+        full = download_youtube_video(url, output_dir, f"{filename_prefix}_full")
+        if full:
+            from apps.api.video.probe import probe_video
+
+            probe = probe_video(full)
+            if probe.is_valid:
+                # One "section" spanning the whole file, so callers rebase
+                # against 0.0 and the rest of the pipeline is unchanged.
+                out.append(DownloadedSection(range_start=0.0, range_end=probe.duration, path=full))
 
     return out
 
